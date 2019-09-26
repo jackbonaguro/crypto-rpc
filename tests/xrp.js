@@ -2,6 +2,8 @@ const { CryptoRpc } = require('../');
 const {assert, expect} = require('chai');
 const mocha = require('mocha');
 const {describe, it} = mocha;
+const cryptoWalletCore = require('crypto-wallet-core');
+const BitcoreLib = require('bitcore-lib');
 const config = {
   chain: 'XRP',
   currency: 'XRP',
@@ -192,5 +194,56 @@ describe('XRP Tests', function() {
   it('should not validate bad address', async () => {
     const isValid = await rpcs.validateAddress({ currency, address: 'NOTANADDRESS' });
     assert(isValid === false);
+  });
+
+  /* Test for new offline signing functionality:
+   * 1. Create new address from arbitrary root key
+   * 2. Send 10000 XRP to that address and mine that transaction
+   * 3. Generate a transaction to send 5000 XRP from that address with xrpRpc
+   * 4. Sign that transaction using cryptoWalletCore
+   * 5. Broadcast that transaction using xrpRpc
+   */
+  it('should send transaction signed offline', async () => {
+    // 1
+    const rootKey = 'xprv9s21ZrQH143K3sDk4cL5zGp95bXSJsxQBsBPhwbzPKxJEfqYGnfbAQqvRyfH8gaZ8u4hdfTsyWE2PAiY9TCK4UhUsj4Z2tki32UmN2xHbir';
+    const accountPath = 'm/44\'/144\'/0\'';
+    const rootXpriv = new BitcoreLib.HDPrivateKey(rootKey, 'mainnet');
+    let { address: newAddress, privKey: newPrivKey, pubKey: newPubKey } = cryptoWalletCore.Deriver.derivePrivateKey('XRP', 'mainnet', rootXpriv.derive(accountPath), 0, false);
+    // 2
+    await rpcs.sendToAddress({ currency, address: newAddress, amount: '10000', secret: 'snoPBrXtMeMyMHUVTgbuqAfg1SUTb' });
+    let acceptance = await xrpRPC.asyncRequest('ledger_accept');
+    assert(acceptance);
+    expect(acceptance).to.have.property('ledger_current_index');
+    // 3
+    // Either this:
+    /*let unsignedTransaction = xrpRPC.getRawTransaction({
+      address: 'rDFrG4CgPFMnQFJBmZH7oqTjLuiB3HS4eu',
+      amount: '5000'
+    });*/
+    // Or this:
+    let rawTxPromise = cryptoWalletCore.Transactions.create({
+      chain: 'XRP',
+      recipients: [{ address: 'rDFrG4CgPFMnQFJBmZH7oqTjLuiB3HS4eu', amount: '5000' }],
+      tag: 1,
+      sourceAddress: newAddress,
+      invoiceID: '',
+      fee: '0.000010',
+      nonce: 3,
+    });
+    let rawTx = await rawTxPromise;
+    let unsignedTransaction = JSON.parse(rawTx);
+    // 4
+    let signedTx = cryptoWalletCore.Transactions.sign({
+      chain: 'XRP',
+      tx: JSON.stringify(unsignedTransaction),
+      key:  {
+        address: newAddress,
+        privKey: newPrivKey,
+        pubKey: newPubKey,
+      },
+    });
+    // 5
+    let submission = await xrpRPC.submitSignedTransaction({ signedTx: signedTx.signedTransaction });
+    console.log(submission);//eslint-disable-line
   });
 });
